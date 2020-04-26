@@ -41,6 +41,12 @@ namespace ams::spl {
         }
     }
 
+    bool IsDisabledProgramVerification() {
+        u64 val = 0;
+        R_ABORT_UNLESS(splGetConfig(SplConfigItem_DisableProgramVerification, &val));
+        return val != 0;
+    }
+
     bool IsDevelopmentHardware() {
         bool is_dev_hardware;
         R_ABORT_UNLESS(splIsDevelopment(&is_dev_hardware));
@@ -70,6 +76,17 @@ namespace ams::spl {
                 return true;
             AMS_UNREACHABLE_DEFAULT_CASE();
         }
+    }
+
+    Result GenerateAesKek(AccessKey *access_key, const void *key_source, size_t key_source_size, u32 generation, u32 option) {
+        AMS_ASSERT(key_source_size == sizeof(KeySource));
+        return splCryptoGenerateAesKek(key_source, generation, option, static_cast<void *>(access_key));
+    }
+
+    Result GenerateAesKey(void *dst, size_t dst_size, const AccessKey &access_key, const void *key_source, size_t key_source_size) {
+        AMS_ASSERT(dst_size == crypto::AesEncryptor128::KeySize);
+        AMS_ASSERT(key_source_size == sizeof(KeySource));
+        return splCryptoGenerateAesKey(std::addressof(access_key), key_source, dst);
     }
 
 }

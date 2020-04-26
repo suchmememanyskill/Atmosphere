@@ -21,9 +21,13 @@ namespace ams::spl {
 
     HardwareType GetHardwareType();
     MemoryArrangement GetMemoryArrangement();
+    bool IsDisabledProgramVerification();
     bool IsDevelopmentHardware();
     bool IsDevelopmentFunctionEnabled();
     bool IsMariko();
     bool IsRecoveryBoot();
+
+    Result GenerateAesKek(AccessKey *access_key, const void *key_source, size_t key_source_size, u32 generation, u32 option);
+    Result GenerateAesKey(void *dst, size_t dst_size, const AccessKey &access_key, const void *key_source, size_t key_source_size);
 
 }

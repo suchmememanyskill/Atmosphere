@@ -20,9 +20,11 @@
     "service_access": [
         "csrng",
         "spl:",
+        "caps:sc",
         "erpt:c",
         "fatal:u",
         "ns:dev",
+        "pgl",
         "time:*",
         "fsp-srv"
     ],

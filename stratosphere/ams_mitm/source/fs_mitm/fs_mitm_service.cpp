@@ -14,9 +14,11 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 #include "../amsmitm_fs_utils.hpp"
+#include "../amsmitm_initialization.hpp"
 #include "fs_shim.h"
 #include "fs_mitm_service.hpp"
 #include "fsmitm_boot0storage.hpp"
+#include "fsmitm_calibration_binary_storage.hpp"
 #include "fsmitm_layered_romfs_storage.hpp"
 #include "fsmitm_save_utils.hpp"
 #include "fsmitm_readonly_layered_filesystem.hpp"
@@ -30,8 +32,8 @@ namespace ams::mitm::fs {
         constexpr const char AtmosphereHblWebContentDir[] = "/atmosphere/hbl_html/";
         constexpr const char ProgramWebContentDir[] = "/manual_html/";
 
-        os::Mutex g_data_storage_lock;
-        os::Mutex g_storage_cache_lock;
+        os::Mutex g_data_storage_lock(false);
+        os::Mutex g_storage_cache_lock(false);
         std::unordered_map<u64, std::weak_ptr<IStorageInterface>> g_storage_cache;
 
         std::shared_ptr<IStorageInterface> GetStorageCacheEntry(ncm::ProgramId program_id) {
@@ -176,7 +178,7 @@ namespace ams::mitm::fs {
         return ResultSuccess();
     }
 
-    Result FsMitmService::OpenSaveDataFileSystem(sf::Out<std::shared_ptr<IFileSystemInterface>> out, u8 _space_id, const FsSaveDataAttribute &attribute) {
+    Result FsMitmService::OpenSaveDataFileSystem(sf::Out<std::shared_ptr<IFileSystemInterface>> out, u8 _space_id, const fs::SaveDataAttribute &attribute) {
         /* We only want to intercept saves for games, right now. */
         const bool is_game_or_hbl = this->client_info.override_status.IsHbl() || ncm::IsApplicationId(this->client_info.program_id);
         R_UNLESS(is_game_or_hbl, sm::mitm::ResultShouldForwardToSession());
@@ -188,14 +190,15 @@ namespace ams::mitm::fs {
         R_UNLESS(cfg::HasContentSpecificFlag(this->client_info.program_id, "redirect_save"), sm::mitm::ResultShouldForwardToSession());
 
         /* Only redirect account savedata. */
-        R_UNLESS(attribute.save_data_type == FsSaveDataType_Account, sm::mitm::ResultShouldForwardToSession());
+        R_UNLESS(attribute.type == fs::SaveDataType::Account, sm::mitm::ResultShouldForwardToSession());
 
         /* Get enum type for space id. */
         auto space_id = static_cast<FsSaveDataSpaceId>(_space_id);
 
         /* Verify we can open the save. */
+        static_assert(sizeof(fs::SaveDataAttribute) == sizeof(::FsSaveDataAttribute));
         FsFileSystem save_fs;
-        R_UNLESS(R_SUCCEEDED(fsOpenSaveDataFileSystemFwd(this->forward_service.get(), &save_fs, space_id, &attribute)), sm::mitm::ResultShouldForwardToSession());
+        R_UNLESS(R_SUCCEEDED(fsOpenSaveDataFileSystemFwd(this->forward_service.get(), &save_fs, space_id, reinterpret_cast<const FsSaveDataAttribute *>(&attribute))), sm::mitm::ResultShouldForwardToSession());
         std::unique_ptr<fs::fsa::IFileSystem> save_ifs = std::make_unique<fs::RemoteFileSystem>(save_fs);
 
         /* Mount the SD card using fs.mitm's session. */
@@ -205,7 +208,7 @@ namespace ams::mitm::fs {
         std::shared_ptr<fs::fsa::IFileSystem> sd_ifs = std::make_shared<fs::RemoteFileSystem>(sd_fs);
 
         /* Verify that we can open the save directory, and that it exists. */
-        const ncm::ProgramId application_id = attribute.application_id == 0 ? this->client_info.program_id : ncm::ProgramId{attribute.application_id};
+        const ncm::ProgramId application_id = attribute.program_id == ncm::InvalidProgramId ? this->client_info.program_id : attribute.program_id;
         char save_dir_path[fs::EntryNameLengthMax + 1];
         R_TRY(mitm::fs::SaveUtil::GetDirectorySaveDataPath(save_dir_path, sizeof(save_dir_path), application_id, space_id, attribute));
 
@@ -251,7 +254,6 @@ namespace ams::mitm::fs {
         const bool is_sysmodule = ncm::IsSystemProgramId(this->client_info.program_id);
         const bool is_hbl = this->client_info.override_status.IsHbl();
         const bool can_write_bis = is_sysmodule || (is_hbl && GetSettingsItemBooleanValue("atmosphere", "enable_hbl_bis_write"));
-        const bool can_read_cal  = is_sysmodule || (is_hbl && GetSettingsItemBooleanValue("atmosphere", "enable_hbl_cal_read"));
 
         /* Allow HBL to write to boot1 (safe firm) + package2. */
         /* This is needed to not break compatibility with ChoiDujourNX, which does not check for write access before beginning an update. */
@@ -264,15 +266,7 @@ namespace ams::mitm::fs {
         if (bis_partition_id == FsBisPartitionId_BootPartition1Root) {
             out.SetValue(std::make_shared<IStorageInterface>(new Boot0Storage(bis_storage, this->client_info)), target_object_id);
         } else if (bis_partition_id == FsBisPartitionId_CalibrationBinary) {
-            /* PRODINFO should *never* be writable. */
-            /* If we have permissions, create a read only storage. */
-            if (can_read_cal) {
-                out.SetValue(std::make_shared<IStorageInterface>(new ReadOnlyStorageAdapter(new RemoteStorage(bis_storage))), target_object_id);
-            } else {
-                /* If we can't read cal, return permission denied. */
-                fsStorageClose(&bis_storage);
-                return fs::ResultPermissionDenied();
-            }
+            out.SetValue(std::make_shared<IStorageInterface>(new CalibrationBinaryStorage(bis_storage, this->client_info)), target_object_id);
         } else {
             if (can_write_bis || can_write_bis_for_choi_support) {
                 /* We can write, so create a writable storage. */
